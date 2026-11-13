@@ -1,0 +1,139 @@
+name: Stock Buzz daily scan
+
+on:
+  schedule:
+    # GitHub cron is UTC. Both lines fire on weekdays; ci_guard.py lets only the one that is 6:00 AM Central proceed.
+    - cron: "0 11 * * 1-5"   # 06:00 CDT (daylight time, Mar–Nov)
+    - cron: "0 12 * * 1-5"   # 06:00 CST (standard time, Nov–Mar)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "full = data + AI judgment + email | quant-only = skip the AI step | probe = source health check only"
+        type: choice
+        options: [full, quant-only, probe]
+        default: full
+      tickers:
+        description: "Extra tickers to analyze, space separated (optional)"
+        type: string
+        required: false
+      send_email:
+        description: "Send the email"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write          # commit data/ and reports/ back
+
+concurrency:
+  group: stock-buzz
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MODE: ${{ github.event.inputs.mode || 'full' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 6 AM Central guard
+        id: guard
+        run: python ci_guard.py "${{ github.event_name }}" "${{ github.event.schedule }}"
+
+      - name: Install dependencies
+        if: steps.guard.outputs.run == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Probe data sources
+        if: steps.guard.outputs.run == 'true' && env.MODE == 'probe'
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+        run: python probe.py
+
+      - name: Collect (Reddit/StockTwits/news/market data)
+        id: collect
+        if: steps.guard.outputs.run == 'true' && env.MODE != 'probe'
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          EXTRA_TICKERS: ${{ github.event.inputs.tickers }}
+        run: python collect.py --tickers $EXTRA_TICKERS
+
+      - uses: actions/setup-node@v4
+        if: steps.collect.outcome == 'success' && env.MODE == 'full'
+        with:
+          node-version: "22"
+
+      # Headless Claude Code on your Claude subscription (CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`).
+      # Only this step sees the Claude token; it gets no email or data-API secrets, and can only
+      # read/write files, search the web, and run the validator. If it fails, finalize sends a numbers-only report.
+      - name: AI judgment (Claude Code, headless)
+        id: judge
+        if: steps.collect.outcome == 'success' && env.MODE == 'full'
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          FALLBACK_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RUN_DIR: ${{ steps.collect.outputs.run_dir }}
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            unset CLAUDE_CODE_OAUTH_TOKEN
+            if [ -n "$FALLBACK_ANTHROPIC_API_KEY" ]; then
+              export ANTHROPIC_API_KEY="$FALLBACK_ANTHROPIC_API_KEY"
+            else
+              echo "No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY secret — skipping AI judgment"; exit 1
+            fi
+          fi
+          unset FALLBACK_ANTHROPIC_API_KEY
+          npm install -g @anthropic-ai/claude-code
+          claude -p "Run directory: $RUN_DIR. Follow the instructions in prompts/judge.md exactly: read $RUN_DIR/digest.md, write $RUN_DIR/claude_scores.json, and validate it with: python finalize.py --validate-only --run-dir $RUN_DIR" \
+            --permission-mode dontAsk \
+            --allowedTools "Read,Write,Glob,WebSearch,Bash(python finalize.py --validate-only *)" \
+            --effort medium \
+            --output-format text
+
+      - name: Finalize, report and email
+        id: finalize
+        if: steps.collect.outcome == 'success'
+        env:
+          RUN_DIR: ${{ steps.collect.outputs.run_dir }}
+          SEND_EMAIL: ${{ github.event.inputs.send_email }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          ARGS="--run-dir $RUN_DIR"
+          if [ "$MODE" = "quant-only" ]; then ARGS="$ARGS --quant-only"; fi
+          if [ "$SEND_EMAIL" = "false" ]; then ARGS="$ARGS --no-email"; fi
+          python finalize.py $ARGS
+
+      - name: Commit picks log and report
+        if: always() && (steps.finalize.outcome == 'success' || steps.finalize.outcome == 'failure')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/ reports/
+          if git diff --cached --quiet; then echo "Nothing to commit"; exit 0; fi
+          git commit -m "Stock Buzz $(TZ=America/Chicago date +%F) [skip ci]"
+          git pull --rebase
+          git push
+
+      - name: Upload run files
+        if: always() && steps.collect.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-${{ github.run_id }}
+          path: runs/
+          retention-days: 30
