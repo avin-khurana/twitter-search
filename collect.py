@@ -44,6 +44,39 @@ def load_mention_baselines(today: str, days: int = config.MENTION_BASELINE_DAYS)
     return {t: sum(v) / len(v) for t, v in acc.items() if len(v) >= 3}
 
 
+def load_crowd_history(today: str, lookback_runs: int = 10) -> dict[str, dict]:
+    """Each ticker's most recent crowd read from earlier runs, and how many run-days in a row it was shortlisted."""
+    path = config.SENTIMENT_CSV
+    if not path.exists():
+        return {}
+    by_date: dict[str, dict[str, dict]] = {}
+    for r in csv.DictReader(path.open()):
+        if r["date"] < today:
+            by_date.setdefault(r["date"], {})[r["ticker"]] = r
+    recent = sorted(by_date)[-lookback_runs:]
+
+    def num(v, cast):
+        try:
+            return cast(v)
+        except (TypeError, ValueError):
+            return None
+
+    out = {}
+    for t in {t for d in recent for t in by_date[d]}:
+        streak = 0
+        for d in reversed(recent):
+            if t not in by_date[d]:
+                break
+            streak += 1
+        last = next(by_date[d][t] for d in reversed(recent) if t in by_date[d])
+        out[t] = {"date": last["date"], "bull": num(last.get("bull"), int) or 0, "bear": num(last.get("bear"), int) or 0,
+                  "crowd_emotion": last.get("crowd_emotion") or None,
+                  "emotion_intensity": num(last.get("emotion_intensity"), int),
+                  "setup": last.get("setup") or None, "action": last.get("action") or None,
+                  "close": num(last.get("close"), float) or 0.0, "streak_days": streak}
+    return out
+
+
 def _parse_tickers(raw: list[str]) -> list[str]:
     out = []
     for item in raw:
@@ -159,6 +192,7 @@ def main(argv: list[str] | None = None) -> Path:
 
     # ── Shortlist by newsworthiness (direction-neutral) ────────────────────
     baselines = load_mention_baselines(run_date)
+    crowd_hist = load_crowd_history(run_date)
     for t in eligible:
         e = pool[t]
         e["ape"], e["st"] = ape_all.get(t), st_by_ticker.get(t)
@@ -237,6 +271,7 @@ def main(argv: list[str] | None = None) -> Path:
             "flags": flags,
             "newsworthiness": round(e["newsworthiness"], 1),
             "requested": t in requested,
+            "crowd_history": crowd_hist.get(t),
         }
 
     ape_snapshot = [{"ticker": r["ticker"], "rank": r["rank"], "mentions": r["mentions"], "upvotes": r["upvotes"]}
@@ -332,6 +367,15 @@ def render_digest(data: dict) -> str:
         st = d["stocktwits"]
         lines.append(f"StockTwits: {st['bull']} bullish / {st['bear']} bearish tags in last {st['messages']} msgs"
                      + (f" (stream error: {st['error']})" if st.get("error") else ""))
+        ch = d.get("crowd_history")
+        if ch:
+            lines.append(
+                f"Crowd history: last analyzed {ch['date']} — {ch['bull']} bull / {ch['bear']} bear tags, emotion "
+                f"{ch['crowd_emotion'] or 'n/a'}" + (f" {ch['emotion_intensity']}/5" if ch.get("emotion_intensity") else "")
+                + f", setup {ch['setup'] or 'none'}, close {ch['close']:.2f}; shortlisted {ch['streak_days']} "
+                "run-day(s) in a row before today")
+        else:
+            lines.append("Crowd history: not on the shortlist in recent runs")
         lines.append("Headlines (last ~48h):")
         if d["headlines"]:
             for h in d["headlines"]:

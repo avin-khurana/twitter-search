@@ -10,7 +10,8 @@ def judgment(**over):
     j = {"why_in_news": "Reason.", "catalyst_type": "earnings", "catalyst_direction": "bullish",
          "catalyst_materiality": 3, "catalyst_is_new": True, "news_catalyst_score": 70,
          "social_sentiment_score": 60, "prospects_adjustment": 5, "direction_summary": "Growing.",
-         "pump_or_bot_flag": False, "key_evidence": "Headline."}
+         "pump_or_bot_flag": False, "key_evidence": "Headline.", "crowd_emotion": "optimism",
+         "emotion_intensity": 3, "crowd_vs_price": "aligned", "narrative_stage": "spreading"}
     j.update(over)
     return j
 
@@ -40,8 +41,15 @@ def test_score_ticker_full_and_penalties():
     assert c["catalyst"] == 70 and c["social"] == 60 and c["prospects"] == 70
     raw = sum(config.WEIGHTS[k] * c[k] for k in c)
     assert r["composite"] == pytest.approx(round(raw, 1))
-    pen = fz.score_ticker(ticker(euphoria=True, earnings_in_window=True), judgment(), weak_regime=False)
+    hot = ticker(euphoria=True, earnings_in_window=True, stretched_vs_ema20=True)
+    pen = fz.score_ticker(hot, judgment(crowd_emotion="euphoria"), weak_regime=False)
     assert pen["composite"] == pytest.approx(round(raw - config.EUPHORIA_PENALTY - config.EARNINGS_PENALTY, 1))
+    # bullish tags on a stretched price are not euphoria when the posts read as calm
+    calm = fz.score_ticker(hot, judgment(crowd_emotion="optimism"), weak_regime=False)
+    assert calm["composite"] == pytest.approx(round(raw - config.EARNINGS_PENALTY, 1)) and not calm["flags"]["euphoria"]
+    overbought = dict(hot, indicators=dict(hot["indicators"], rsi14=84.0))
+    assert fz.score_ticker(overbought, judgment(crowd_emotion="optimism"), False)["flags"]["euphoria"]   # RSI > 80
+    assert fz.score_ticker(hot, None, False)["flags"]["euphoria"]                # numbers-only keeps the tag flag
 
 
 def test_score_ticker_quant_only_uses_social_base_and_drops_catalyst():
@@ -128,12 +136,13 @@ def test_validate_accepts_good_file():
 
 def test_validate_reports_specific_problems():
     bad = judgment(catalyst_type="rumor", news_catalyst_score=120, catalyst_materiality=True,
-                   prospects_adjustment=-20, why_in_news="x" * 301, pump_or_bot_flag="no")
+                   prospects_adjustment=-20, why_in_news="x" * 301, pump_or_bot_flag="no",
+                   crowd_emotion="greedy", emotion_intensity=6, narrative_stage="late")
     errs = fz.validate({"tickers": {"AAA": bad, "ZZZ": judgment()}}, ["AAA", "BBB"])
     text = "\n".join(errs)
     for needle in ("missing ticker BBB", "unexpected ticker ZZZ", "catalyst_type", "news_catalyst_score: 120",
                    "catalyst_materiality: must be an integer", "prospects_adjustment: -20", "why_in_news: 301",
-                   "pump_or_bot_flag"):
+                   "pump_or_bot_flag", "crowd_emotion: 'greedy'", "emotion_intensity: 6", "narrative_stage: 'late'"):
         assert needle in text, needle
 
 

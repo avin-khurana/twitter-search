@@ -75,6 +75,8 @@ def indicators(df: pd.DataFrame, spy_ret20: float | None = None) -> dict:
         "bar_date": str(df.index[-1].date()),
         "bars": int(len(df)),
         "close": close,
+        "high": _f(h.iloc[-1]),
+        "low": _f(low.iloc[-1]),
         "prev_close": _f(c.iloc[-2]) if len(c) > 1 else None,
         "change_1d": ret(1),
         "gap": _f(o.iloc[-1] / c.iloc[-2] - 1) if len(c) > 1 else None,

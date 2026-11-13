@@ -14,6 +14,7 @@ DATA_DIR = ROOT / "data"
 REPORTS_DIR = ROOT / "reports"
 PICKS_CSV = DATA_DIR / "picks.csv"
 MENTIONS_CSV = DATA_DIR / "mentions_history.csv"
+SENTIMENT_CSV = DATA_DIR / "sentiment_history.csv"
 
 # ── Secrets (all optional; missing ones just disable that feature) ─────────────
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
@@ -47,7 +48,7 @@ MAX_DEEP = 20                 # tickers that get full enrichment + Claude judgme
 # ── Enrichment ─────────────────────────────────────────────────────────────────
 NEWS_LOOKBACK_DAYS = 2
 MAX_HEADLINES = 8
-STOCKTWITS_DIGEST_MSGS = 6
+STOCKTWITS_DIGEST_MSGS = 10       # Claude needs post text to read the crowd's emotion
 INSIDER_LOOKBACK_DAYS = 90
 ANALYST_LOOKBACK_DAYS = 30
 MENTION_BASELINE_DAYS = 7
@@ -84,5 +85,35 @@ EXTENDED_ATR = 1.0            # price more than this many ATRs above EMA20 => wa
 TIME_STOP_DAYS = 10
 
 TOP_N = 5
-AVOID_N = 3
+AVOID_N = 5
 TOP_MIN_MATERIALITY = 2       # top-5 names need a real catalyst (AI materiality >= 2, type != none)
+
+# ── Behavioral setups (setups.py) ──────────────────────────────────────────────
+# Drift: people underreact to real good news and catch up over days
+DRIFT_MIN_MOVE = 0.03         # 1-day move or gap that confirms the news...
+DRIFT_MIN_REL_VOLUME = 1.2    # ...on at least this much relative volume
+DRIFT_MIN_5D = 0.06           # or: up this much over 5 days and not giving it back
+DRIFT_MIN_SCORE = 60          # composite floor for a drift BUY
+DRIFT_MIN_SCORE_WEAK = 65     # stricter when the market regime is weak
+
+# Overreaction dip: panic selling on news that is not actually bad
+DIP_MIN_DROP = 0.04           # 1-day drop of at least this much...
+DIP_ATR_MULT = 1.25           # ...and at least this many ATRs
+DIP_MIN_DROP_5D = 0.10        # or a 5-day drop of at least this much...
+DIP_ATR_MULT_5D = 3.0         # ...and this many ATRs
+DIP_MAX_PRIOR_RUN = 0.05      # not a pullback after a spike: 5-day return must be below this
+DIP_MIN_NEWS = 45             # catalyst score must be at least neutral
+DIP_MIN_PROSPECTS = 60        # business outlook must be solid
+DIP_TRIGGER_ATR = 1.0         # buy trigger: a bounce of this many ATRs off the close (or the last high if nearer)
+DIP_MIN_RISK_ATR = 0.75       # trigger entry risk is clamped to this many ATRs...
+DIP_MAX_RISK_ATR = 2.0
+
+# Hype fade: euphoria and herding without confirmed news
+HYPE_MIN_INTENSITY = 4        # euphoria at this intensity (1-5)...
+HYPE_BULL_RATIO = 0.85        # ...or euphoria with this share of tagged posts bullish
+
+# Hope trap: falling price + bad news while the crowd stays bullish
+HOPE_BULL_RATIO = 0.80        # StockTwits skews bullish by default, so this bar is high
+HOPE_MAX_NEWS = 40
+HOPE_MIN_DROP_20D = 0.10
+HOPE_MIN_DROP_5D = 0.08

@@ -19,9 +19,25 @@ collect.py ──► runs/<id>/digest.md ──► Claude (prompts/judge.md) ─
 | Smart money | 15% | Insider buys/sells, short interest, put/call ratio, institutional ownership |
 | Attention velocity | 10% | Reddit mentions vs 7-day baseline, StockTwits trending rank, mover lists |
 
-Penalties: euphoria −10, earnings inside the window −5. BUY ≥ 65 (≥ 72 when SPY < 50-day EMA or VIX > 25)
-with technical ≥ 55; SELL ≤ 40 or a strongly bearish catalyst below EMA20; otherwise HOLD. Top-5 names
-need a real catalyst. All thresholds are in `config.py`.
+Penalties: euphoria −10, earnings inside the window −5. Top-5 names need a real catalyst.
+
+## Behavioral setups (these decide the call)
+Claude labels the crowd for each stock (emotion, intensity, whether crowd and price agree, how far the
+story has spread). `setups.py` then compares what the crowd feels with what news and price are doing:
+
+| Setup | The psychology | Rule of thumb | Call |
+|---|---|---|---|
+| Drift | People underreact to real news | New, material good news + price confirmed it + crowd not euphoric | BUY if score ≥ 60 (65 in a weak market) and price is above EMA20 |
+| Overreaction dip | Panic selling on news that isn't bad | Drop ≥ 1.25 ATR, catalyst ≥ 45, prospects ≥ 60 | BUY only after a 1-ATR bounce; in a weak market only if the crowd has given up |
+| Hype fade | Herding late in a move | Euphoric crowd + run-up + no confirmed news | SELL / avoid |
+| Hope trap | Holders won't sell losers | Downtrend + bad news + crowd still bullish | SELL / avoid |
+
+Stocks with no setup fall back to the score: BUY ≥ 65 (≥ 72 when SPY < 50-day EMA or VIX > 25) with
+technical ≥ 55; SELL ≤ 40 or a strongly bearish catalyst below EMA20; otherwise HOLD.
+
+Every analyzed stock is logged to `data/picks.csv` with its setup, and its crowd read to
+`data/sentiment_history.csv`. The track record in the email reports 5-day results per setup, which is
+how to tell which pattern actually works. All thresholds are in `config.py`; they are starting guesses.
 
 ## One-time setup
 1. **Claude token:** run `claude setup-token` in your terminal and copy the token.
